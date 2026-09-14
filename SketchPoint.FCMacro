@@ -1,0 +1,140 @@
+# -*- coding: utf-8 -*-
+# SketchPoint 0.1.0 — version d'essai, validation FreeCAD requise.
+import math
+import re
+import FreeCAD as App
+import FreeCADGui as Gui
+from PySide import QtCore, QtWidgets
+
+VERSION = "0.1.0"
+TOLERANCE = 1e-6  # mm
+
+
+def selected_point():
+    doc = App.ActiveDocument
+    if doc is None or Gui.ActiveDocument is None:
+        raise ValueError("Ouvre un document et édite une esquisse.")
+    edit = Gui.ActiveDocument.getInEdit()
+    if edit is None or not edit.Object.isDerivedFrom("Sketcher::SketchObject"):
+        raise ValueError("Passe en édition d'esquisse, puis sélectionne un point.")
+    sketch = edit.Object
+    selection = Gui.Selection.getSelectionEx()
+    if len(selection) != 1 or selection[0].Object != sketch:
+        raise ValueError("Sélectionne un seul point de l'esquisse éditée.")
+    names = selection[0].SubElementNames
+    if len(names) != 1 or not re.fullmatch(r"Vertex[1-9][0-9]*", names[0]):
+        raise ValueError("Sélectionne un point, et non une arête ou une contrainte.")
+    geo, pos = sketch.getGeoVertexIndex(int(names[0][6:]) - 1)
+    if geo < 0 or geo >= sketch.GeometryCount or pos not in (1, 2, 3):
+        raise ValueError("L'origine et les géométries externes ne sont pas déplaçables.")
+    geometry = sketch.Geometry[geo]
+    allowed = {
+        "Part::GeomPoint": (1,),
+        "Part::GeomLineSegment": (1, 2),
+        "Part::GeomCircle": (3,),
+        "Part::GeomArcOfCircle": (1, 2, 3),
+    }
+    if pos not in allowed.get(geometry.TypeId, ()):
+        raise ValueError("Version 0.1 : points, segments, cercles et arcs de cercle uniquement.")
+    if not hasattr(sketch, "moveGeometries"):
+        raise ValueError("Cette version nécessite SketchObject.moveGeometries (FreeCAD récent).")
+    return doc, sketch, geo, pos
+
+
+class PositionDialog(QtWidgets.QDialog):
+    def __init__(self, sketch, geo, pos):
+        super().__init__(Gui.getMainWindow())
+        self.setWindowTitle("SketchPoint " + VERSION + " — Positionner un point")
+        self.origin = sketch.getPoint(geo, pos)
+        layout = QtWidgets.QFormLayout(self)
+        layout.addRow(QtWidgets.QLabel(
+            "Repère local de l'esquisse — valeurs en mm\n"
+            "Position actuelle : X = %.9g ; Y = %.9g"
+            % (self.origin.x, self.origin.y)))
+        self.mode = QtWidgets.QComboBox()
+        self.mode.addItems(["Absolu — depuis l'origine", "Relatif — depuis le point"])
+        layout.addRow("Mode", self.mode)
+        self.x = QtWidgets.QDoubleSpinBox()
+        self.y = QtWidgets.QDoubleSpinBox()
+        for field in (self.x, self.y):
+            field.setDecimals(9)
+            field.setRange(-1e9, 1e9)
+            field.setSuffix(" mm")
+        self.lx, self.ly = QtWidgets.QLabel("X"), QtWidgets.QLabel("Y")
+        layout.addRow(self.lx, self.x)
+        layout.addRow(self.ly, self.y)
+        self.target_label = QtWidgets.QLabel()
+        layout.addRow("Cible", self.target_label)
+        note = QtWidgets.QLabel(
+            "Les contraintes existantes sont conservées. Les éléments liés peuvent bouger.\n"
+            "Ce déplacement n'ajoute pas de contrainte de position.")
+        note.setWordWrap(True)
+        layout.addRow(note)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+        self.mode.currentIndexChanged.connect(self.reset_values)
+        self.x.valueChanged.connect(self.update_target)
+        self.y.valueChanged.connect(self.update_target)
+        self.reset_values()
+
+    def reset_values(self, *args):
+        relative = self.mode.currentIndex() == 1
+        self.lx.setText("ΔX" if relative else "X")
+        self.ly.setText("ΔY" if relative else "Y")
+        self.x.setValue(0 if relative else self.origin.x)
+        self.y.setValue(0 if relative else self.origin.y)
+        self.update_target()
+
+    def target(self):
+        x, y = self.x.value(), self.y.value()
+        if self.mode.currentIndex() == 1:
+            x += self.origin.x
+            y += self.origin.y
+        return App.Vector(x, y, 0)
+
+    def update_target(self, *args):
+        p = self.target()
+        self.target_label.setText("X = %.9g ; Y = %.9g mm" % (p.x, p.y))
+
+
+def main():
+    try:
+        doc, sketch, geo, pos = selected_point()
+        dialog = PositionDialog(sketch, geo, pos)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        target = dialog.target()
+        if not all(math.isfinite(v) for v in (target.x, target.y)):
+            raise ValueError("Coordonnées non finies.")
+        if (sketch.getPoint(geo, pos) - target).Length <= TOLERANCE:
+            return
+        doc.openTransaction("SketchPoint — positionner un point")
+        try:
+            sketch.moveGeometries([(geo, pos)], target, False)
+            if sketch.solve() != 0:
+                raise ValueError("Le solveur signale une erreur.")
+            doc.recompute()
+            actual = sketch.getPoint(geo, pos)
+            if (actual - target).Length > TOLERANCE:
+                raise ValueError(
+                    "Cible non atteinte : les contraintes peuvent empêcher ce déplacement.\n"
+                    "Cible : (%.9g ; %.9g) — résultat : (%.9g ; %.9g) mm"
+                    % (target.x, target.y, actual.x, actual.y))
+        except Exception:
+            doc.abortTransaction()
+            doc.recompute()
+            raise
+        else:
+            doc.commitTransaction()
+        App.Console.PrintMessage(
+            "SketchPoint : X = %.9g ; Y = %.9g mm. Annulation : Ctrl+Z.\n"
+            % (actual.x, actual.y))
+    except Exception as error:
+        QtWidgets.QMessageBox.warning(
+            Gui.getMainWindow(), "SketchPoint — déplacement non effectué", str(error))
+
+
+main()
