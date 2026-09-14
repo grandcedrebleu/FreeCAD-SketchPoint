@@ -1,8 +1,8 @@
-# FreeCAD SketchPoint — 0.1.0 (version d'essai)
+# FreeCAD SketchPoint — 0.1.1 (version d'essai)
 
 Positionner numériquement un point dans une esquisse en cours d'édition.
 
-**Statut : code déposé, non exécuté dans FreeCAD. Compatibilité FreeCAD 1.1 à valider. Ce dépôt ne constitue pas encore une release validée.**
+**Statut : version 0.1.1 d’essai. Le déplacement relatif et le raccourci de la version précédente ont été confirmés par l’utilisateur. Le nouveau contrôle des dépendances reste à tester dans FreeCAD.**
 
 ## Fonctionnement
 
@@ -65,3 +65,9 @@ Cette lecture du code amont ne remplace pas les tests dans la version installée
 
 ### 0.1.0 — version d'essai
 Première implémentation du positionnement absolu et relatif, fenêtre française, contrôle de cible et transaction d'annulation. Tests d'exécution FreeCAD restant à réaliser.
+
+### 0.1.1 — version d'essai
+- Remplace exec_() par exec().
+- Après déplacement, inspecte l'esquisse et ses objets dépendants : erreurs de validité et objets encore à recalculer sont signalés dans une fenêtre et la console.
+- Le déplacement est conservé, annulable avec Ctrl+Z. Les erreurs signalées peuvent être préexistantes ; aucune attribution automatique au déplacement.
+- Syntaxe Python vérifiée ; comportement FreeCAD à valider sur une extrusion avec contour ouvert, un modèle sain et un modèle déjà en erreur.
