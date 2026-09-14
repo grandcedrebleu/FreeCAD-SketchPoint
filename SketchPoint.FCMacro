@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-# SketchPoint 0.1.0 — version d'essai, validation FreeCAD requise.
+# SketchPoint 0.1.1 — version d'essai, validation FreeCAD requise.
 import math
 import re
 import FreeCAD as App
 import FreeCADGui as Gui
 from PySide import QtCore, QtWidgets
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 TOLERANCE = 1e-6  # mm
 
 
@@ -100,11 +100,31 @@ class PositionDialog(QtWidgets.QDialog):
         self.target_label.setText("X = %.9g ; Y = %.9g mm" % (p.x, p.y))
 
 
+def dependent_problems(sketch):
+    """Inspect downstream objects without changing them."""
+    pending = [sketch]
+    seen = set()
+    problems = []
+    while pending:
+        obj = pending.pop()
+        key = (obj.Document.Name, obj.Name)
+        if key in seen:
+            continue
+        seen.add(key)
+        pending.extend(obj.InList)
+        states = set(obj.State)
+        if not obj.isValid() or states.intersection({"Invalid", "Error"}):
+            problems.append("%s : %s" % (obj.Label, obj.getStatusString()))
+        elif "Touched" in states:
+            problems.append("%s : recalcul encore nécessaire" % obj.Label)
+    return problems
+
+
 def main():
     try:
         doc, sketch, geo, pos = selected_point()
         dialog = PositionDialog(sketch, geo, pos)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         target = dialog.target()
         if not all(math.isfinite(v) for v in (target.x, target.y)):
@@ -129,6 +149,21 @@ def main():
             raise
         else:
             doc.commitTransaction()
+        try:
+            problems = dependent_problems(sketch)
+        except Exception as check_error:
+            problems = ["Contrôle des objets dépendants indisponible : " + str(check_error)]
+        if problems:
+            message = (
+                "Point déplacé : X = %.9g ; Y = %.9g mm.\n"
+                "Le modèle présente des erreurs ou un recalcul incomplet :\n%s\n"
+                "Ces problèmes peuvent être antérieurs au déplacement.\n"
+                "Déplacement conservé ; Ctrl+Z pour l'annuler."
+                % (actual.x, actual.y, "\n".join(problems)))
+            App.Console.PrintWarning("SketchPoint : " + message + "\n")
+            QtWidgets.QMessageBox.warning(
+                Gui.getMainWindow(), "SketchPoint — modèle à vérifier", message)
+            return
         App.Console.PrintMessage(
             "SketchPoint : X = %.9g ; Y = %.9g mm. Annulation : Ctrl+Z.\n"
             % (actual.x, actual.y))
